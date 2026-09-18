@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Space Blaster</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background: #030712;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .hud {
+      display: flex;
+      justify-content: space-between;
+      width: 480px;
+      max-width: 95vw;
+      margin-bottom: 12px;
+      background: #111827;
+      padding: 8px 16px;
+      border-radius: 6px;
+      border: 1px solid #1f2937;
+    }
+    .hud-val { color: #38bdf8; font-weight: bold; font-family: monospace; }
+    #canvas {
+      background: #020617;
+      border: 2px solid #1f2937;
+      border-radius: 8px;
+      box-shadow: 0 0 30px rgba(56, 189, 248, 0.15);
+    }
+    .hint { margin-top: 10px; font-size: 12px; color: #64748b; }
+    .key { background: #1f2937; color: #e2e8f0; padding: 2px 6px; border-radius: 4px; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <div class="hud">
+    <div>SCORE: <span id="score" class="hud-val">0</span></div>
+    <div>WAVE: <span id="wave" class="hud-val">1</span></div>
+    <div>LIVES: <span id="lives" class="hud-val" style="color:#ef4444;">❤❤❤</span></div>
+  </div>
+
+  <canvas id="canvas" width="480" height="420"></canvas>
+
+  <div class="hint">
+    <span>Move: <span class="key">A</span><span class="key">D</span> or <span class="key">←</span><span class="key">→</span></span>
+    <span>•</span>
+    <span>Fire: <span class="key">Space</span></span>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    let score = 0;
+    let wave = 1;
+    let lives = 3;
+    let state = 'playing'; // playing, gameover
+
+    const player = {
+      x: canvas.width / 2 - 15,
+      y: canvas.height - 35,
+      w: 30,
+      h: 16,
+      speed: 5
+    };
+
+    let bullets = [];
+    let enemyBullets = [];
+    let enemies = [];
+    let particles = [];
+    let enemyDir = 1;
+    let enemyStepDown = false;
+    let lastEnemyShoot = 0;
+    let keys = {};
+
+    // Stars background
+    const stars = Array.from({ length: 60 }, () => ({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      s: Math.random() * 2 + 0.5,
+      speed: Math.random() * 0.5 + 0.2
+    }));
+
+    // Audio
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function beep(freq, dur = 0.05, type = 'sine') {
+      try {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + dur);
+      } catch(e) {}
+    }
+
+    function initWave() {
+      enemies = [];
+      const rows = 4;
+      const cols = 8;
+      const enemyColors = ['#f43f5e', '#a855f7', '#06b6d4', '#10b981'];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          enemies.push({
+            x: c * 48 + 48,
+            y: r * 32 + 40,
+            w: 24,
+            h: 18,
+            alive: true,
+            color: enemyColors[r]
+          });
+        }
+      }
+    }
+
+    window.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      if (e.key === ' ' && state === 'playing') {
+        e.preventDefault();
+        shootPlayer();
+      } else if (e.key === ' ' && state === 'gameover') {
+        score = 0;
+        wave = 1;
+        lives = 3;
+        state = 'playing';
+        document.getElementById('score').textContent = 0;
+        document.getElementById('wave').textContent = 1;
+        document.getElementById('lives').textContent = '❤❤❤';
+        initWave();
+      }
+    });
+    window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+    function shootPlayer() {
+      if (bullets.length < 3) {
+        bullets.push({ x: player.x + player.w / 2 - 2, y: player.y, w: 4, h: 10 });
+        beep(700, 0.06, 'square');
+      }
+    }
+
+    function addExplosion(x, y, color) {
+      for (let i = 0; i < 10; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 6,
+          vy: (Math.random() - 0.5) * 6,
+          color,
+          alpha: 1
+        });
+      }
+    }
+
+    function update() {
+      // Starfield
+      stars.forEach(s => {
+        s.y += s.speed;
+        if (s.y > canvas.height) s.y = 0;
+      });
+
+      if (state !== 'playing') return;
+
+      // Player move
+      if (keys['ArrowLeft'] || keys['a'] || keys['A']) {
+        player.x = Math.max(10, player.x - player.speed);
+      }
+      if (keys['ArrowRight'] || keys['d'] || keys['D']) {
+        player.x = Math.min(canvas.width - player.w - 10, player.x + player.speed);
+      }
+
+      // Player bullets
+      for (let i = bullets.length - 1; i >= 0; i--) {
+        const b = bullets[i];
+        b.y -= 7;
+        if (b.y < 0) {
+          bullets.splice(i, 1);
+          continue;
+        }
+        // Collision with enemies
+        for (let j = 0; j < enemies.length; j++) {
+          const e = enemies[j];
+          if (e.alive && b.x > e.x && b.x < e.x + e.w && b.y > e.y && b.y < e.y + e.h) {
+            e.alive = false;
+            bullets.splice(i, 1);
+            score += 20;
+            document.getElementById('score').textContent = score;
+            addExplosion(e.x + e.w / 2, e.y + e.h / 2, e.color);
+            beep(250, 0.1, 'sawtooth');
+            break;
+          }
+        }
+      }
+
+      // Enemy logic
+      let minX = 999, maxX = 0;
+      let livingCount = 0;
+      enemies.forEach(e => {
+        if (e.alive) {
+          livingCount++;
+          if (e.x < minX) minX = e.x;
+          if (e.x + e.w > maxX) maxX = e.x + e.w;
+        }
+      });
+
+      if (livingCount === 0) {
+        wave++;
+        document.getElementById('wave').textContent = wave;
+        initWave();
+        beep(900, 0.2);
+        return;
+      }
+
+      const speed = 1 + (32 - livingCount) * 0.08 + (wave * 0.2);
+      if (enemyStepDown) {
+        enemies.forEach(e => e.y += 12);
+        enemyStepDown = false;
+        enemyDir = -enemyDir;
+      } else {
+        enemies.forEach(e => e.x += enemyDir * speed);
+        if (maxX > canvas.width - 15 || minX < 15) {
+          enemyStepDown = true;
+        }
+      }
+
+      // Enemy reaches player
+      enemies.forEach(e => {
+        if (e.alive && e.y + e.h > player.y) {
+          state = 'gameover';
+        }
+      });
+
+      // Enemy firing
+      if (Date.now() - lastEnemyShoot > Math.max(600, 1500 - wave * 100)) {
+        const aliveEnemies = enemies.filter(e => e.alive);
+        if (aliveEnemies.length > 0) {
+          const shooter = aliveEnemies[Math.floor(Math.random() * aliveEnemies.length)];
+          enemyBullets.push({ x: shooter.x + shooter.w / 2, y: shooter.y + shooter.h, w: 3, h: 8 });
+          lastEnemyShoot = Date.now();
+        }
+      }
+
+      // Enemy bullets move
+      for (let i = enemyBullets.length - 1; i >= 0; i--) {
+        const eb = enemyBullets[i];
+        eb.y += 4;
+        if (eb.y > canvas.height) {
+          enemyBullets.splice(i, 1);
+          continue;
+        }
+        // Hit player
+        if (eb.x > player.x && eb.x < player.x + player.w && eb.y > player.y && eb.y < player.y + player.h) {
+          enemyBullets.splice(i, 1);
+          lives--;
+          document.getElementById('lives').textContent = '❤'.repeat(Math.max(0, lives));
+          addExplosion(player.x + player.w / 2, player.y + player.h / 2, '#38bdf8');
+          beep(120, 0.3, 'sawtooth');
+          if (lives <= 0) {
+            state = 'gameover';
+          }
+        }
+      }
+
+      // Particles
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.alpha -= 0.04;
+        if (p.alpha <= 0) particles.splice(i, 1);
+      }
+    }
+
+    function draw() {
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Stars
+      ctx.fillStyle = '#ffffff';
+      stars.forEach(s => {
+        ctx.fillRect(s.x, s.y, s.s, s.s);
+      });
+
+      // Player Ship (vector triangle)
+      ctx.fillStyle = '#38bdf8';
+      ctx.beginPath();
+      ctx.moveTo(player.x + player.w / 2, player.y);
+      ctx.lineTo(player.x + player.w, player.y + player.h);
+      ctx.lineTo(player.x + player.w / 2, player.y + player.h - 4);
+      ctx.lineTo(player.x, player.y + player.h);
+      ctx.closePath();
+      ctx.fill();
+
+      // Bullets
+      ctx.fillStyle = '#38bdf8';
+      bullets.forEach(b => ctx.fillRect(b.x, b.y, b.w, b.h));
+
+      // Enemy Bullets
+      ctx.fillStyle = '#ef4444';
+      enemyBullets.forEach(eb => ctx.fillRect(eb.x, eb.y, eb.w, eb.h));
+
+      // Enemies (Pixel-style bugs)
+      enemies.forEach(e => {
+        if (e.alive) {
+          ctx.fillStyle = e.color;
+          ctx.beginPath();
+          ctx.roundRect(e.x, e.y, e.w, e.h, 4);
+          ctx.fill();
+          // Eyes
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(e.x + 4, e.y + 4, 3, 3);
+          ctx.fillRect(e.x + e.w - 7, e.y + 4, 3, 3);
+        }
+      });
+
+      // Particles
+      particles.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.alpha;
+        ctx.fillRect(p.x, p.y, 3, 3);
+      });
+      ctx.globalAlpha = 1;
+
+      // Game Over Screen
+      if (state === 'gameover') {
+        ctx.fillStyle = 'rgba(2, 6, 23, 0.85)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = '#ef4444';
+        ctx.font = 'bold 26px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('MISSION FAILED', canvas.width / 2, canvas.height / 2 - 10);
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '14px sans-serif';
+        ctx.fillText('Press SPACE to Restart', canvas.width / 2, canvas.height / 2 + 25);
+      }
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    initWave();
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>

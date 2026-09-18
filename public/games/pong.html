@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retro Pong</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; user-select: none; }
+    body {
+      background: #090e1a;
+      color: #f8fafc;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      overflow: hidden;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      width: 580px;
+      max-width: 95vw;
+      margin-bottom: 12px;
+      font-weight: bold;
+      color: #94a3b8;
+    }
+    .score { font-size: 28px; color: #38bdf8; font-family: monospace; }
+    #canvas {
+      background: #020617;
+      border: 2px solid #1e293b;
+      border-radius: 8px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .controls {
+      margin-top: 12px;
+      font-size: 13px;
+      color: #64748b;
+      display: flex;
+      gap: 16px;
+      align-items: center;
+    }
+    .key {
+      background: #1e293b;
+      color: #e2e8f0;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .mode-btn {
+      background: #334155;
+      color: white;
+      border: none;
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .mode-btn.active { background: #2563eb; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>PLAYER: <span id="p1-score" class="score">0</span></div>
+    <div>
+      <button id="ai-btn" class="mode-btn active" onclick="setMode(true)">VS AI</button>
+      <button id="pvp-btn" class="mode-btn" onclick="setMode(false)">2 PLAYERS</button>
+    </div>
+    <div>CPU / P2: <span id="p2-score" class="score">0</span></div>
+  </div>
+
+  <canvas id="canvas" width="580" height="380"></canvas>
+
+  <div class="controls">
+    <span>P1: <span class="key">W</span> / <span class="key">S</span> or Mouse</span>
+    <span id="p2-hint">P2: <span class="key">↑</span> / <span class="key">↓</span></span>
+    <span>•</span>
+    <span>Pause: <span class="key">Space</span></span>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    let vsAI = true;
+    let p1Score = 0;
+    let p2Score = 0;
+
+    const paddleWidth = 10;
+    const paddleHeight = 70;
+    let p1Y = (canvas.height - paddleHeight) / 2;
+    let p2Y = (canvas.height - paddleHeight) / 2;
+
+    let ballX = canvas.width / 2;
+    let ballY = canvas.height / 2;
+    let ballSpeedX = 5;
+    let ballSpeedY = 3;
+    const ballSize = 8;
+
+    let keys = {};
+    let isPaused = false;
+
+    // Audio
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function beep(freq) {
+      try {
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.05);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.05);
+      } catch(e) {}
+    }
+
+    function setMode(ai) {
+      vsAI = ai;
+      document.getElementById('ai-btn').classList.toggle('active', ai);
+      document.getElementById('pvp-btn').classList.toggle('active', !ai);
+      document.getElementById('p2-hint').style.display = ai ? 'none' : 'inline';
+      resetBall();
+    }
+
+    function resetBall() {
+      ballX = canvas.width / 2;
+      ballY = canvas.height / 2;
+      ballSpeedX = (Math.random() > 0.5 ? 5 : -5);
+      ballSpeedY = (Math.random() * 4 - 2);
+    }
+
+    canvas.addEventListener('mousemove', e => {
+      const rect = canvas.getBoundingClientRect();
+      const root = document.documentElement;
+      const mouseY = e.clientY - rect.top - (paddleHeight / 2);
+      p1Y = Math.max(0, Math.min(canvas.height - paddleHeight, mouseY));
+    });
+
+    window.addEventListener('keydown', e => {
+      keys[e.key] = true;
+      if (e.key === ' ') isPaused = !isPaused;
+    });
+
+    window.addEventListener('keyup', e => {
+      keys[e.key] = false;
+    });
+
+    function update() {
+      if (isPaused) return;
+
+      // P1 Keyboard movement
+      if (keys['w'] || keys['W']) p1Y = Math.max(0, p1Y - 6);
+      if (keys['s'] || keys['S']) p1Y = Math.min(canvas.height - paddleHeight, p1Y + 6);
+
+      // P2 Movement
+      if (vsAI) {
+        // Smooth AI
+        const center = p2Y + paddleHeight / 2;
+        if (center < ballY - 15) p2Y += 4.5;
+        else if (center > ballY + 15) p2Y -= 4.5;
+        p2Y = Math.max(0, Math.min(canvas.height - paddleHeight, p2Y));
+      } else {
+        if (keys['ArrowUp']) p2Y = Math.max(0, p2Y - 6);
+        if (keys['ArrowDown']) p2Y = Math.min(canvas.height - paddleHeight, p2Y + 6);
+      }
+
+      // Ball Movement
+      ballX += ballSpeedX;
+      ballY += ballSpeedY;
+
+      // Top / Bottom wall bounce
+      if (ballY - ballSize < 0 || ballY + ballSize > canvas.height) {
+        ballSpeedY = -ballSpeedY;
+        beep(300);
+      }
+
+      // P1 Paddle hit
+      if (ballX - ballSize < 25 && ballX + ballSize > 15) {
+        if (ballY > p1Y && ballY < p1Y + paddleHeight) {
+          ballSpeedX = -ballSpeedX * 1.05; // slight speed up
+          const deltaY = ballY - (p1Y + paddleHeight / 2);
+          ballSpeedY = deltaY * 0.25;
+          beep(500);
+        }
+      }
+
+      // P2 Paddle hit
+      if (ballX + ballSize > canvas.width - 25 && ballX - ballSize < canvas.width - 15) {
+        if (ballY > p2Y && ballY < p2Y + paddleHeight) {
+          ballSpeedX = -ballSpeedX * 1.05;
+          const deltaY = ballY - (p2Y + paddleHeight / 2);
+          ballSpeedY = deltaY * 0.25;
+          beep(500);
+        }
+      }
+
+      // Scoring
+      if (ballX < 0) {
+        p2Score++;
+        document.getElementById('p2-score').textContent = p2Score;
+        beep(200);
+        resetBall();
+      } else if (ballX > canvas.width) {
+        p1Score++;
+        document.getElementById('p1-score').textContent = p1Score;
+        beep(700);
+        resetBall();
+      }
+    }
+
+    function draw() {
+      // Clear
+      ctx.fillStyle = '#020617';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Center dashed line
+      ctx.setLineDash([6, 6]);
+      ctx.strokeStyle = '#1e293b';
+      ctx.beginPath();
+      ctx.moveTo(canvas.width / 2, 0);
+      ctx.lineTo(canvas.width / 2, canvas.height);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // P1 paddle (cyan)
+      ctx.fillStyle = '#38bdf8';
+      ctx.shadowColor = '#38bdf8';
+      ctx.shadowBlur = 8;
+      ctx.fillRect(15, p1Y, paddleWidth, paddleHeight);
+
+      // P2 paddle (purple)
+      ctx.fillStyle = '#c084fc';
+      ctx.shadowColor = '#c084fc';
+      ctx.shadowBlur = 8;
+      ctx.fillRect(canvas.width - 25, p2Y, paddleWidth, paddleHeight);
+
+      // Ball
+      ctx.fillStyle = '#f8fafc';
+      ctx.shadowColor = '#f8fafc';
+      ctx.shadowBlur = 10;
+      ctx.beginPath();
+      ctx.arc(ballX, ballY, ballSize, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.shadowBlur = 0;
+    }
+
+    function loop() {
+      update();
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    setMode(true);
+    requestAnimationFrame(loop);
+  </script>
+</body>
+</html>
